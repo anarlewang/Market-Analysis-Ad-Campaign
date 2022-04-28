@@ -1,0 +1,211 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+# Environment setup
+```{r}
+library(tidyverse)
+library(lubridate)
+library(janitor)
+library(ggpubr)
+library(rstatix)
+set.seed(9999)
+```
+
+# Data load
+user id: unique identifier of the user
+test: whether the user was exposed to advertising (1) or was in the control group (0)
+converted: whether the user converted (1) or not (0)
+tot_impr: total number of ad impression the user encountered
+mode_impr_day: day of the week user encountered the most number of impression (1) Mon, ..., (7) Sunday
+mode_impr_hour: hour of the day in which user encountered the most number of impression (0-23)
+
+```{r}
+data <- read.csv("rocketfuel_data.csv")
+attach(data)
+
+skimr::skim(data)
+```
+
+# Data cleaning & pre-processing
+```{r}
+# Remove users with null values if any
+data <- data %>% 
+  drop_na(user_id, test, converted, tot_impr, mode_impr_day, mode_impr_hour)
+
+# Convert into categorical
+data$test = as.factor(data$test)
+data$converted = as.factor(data$converted)
+data$mode_impr_day = as.factor(data$mode_impr_day)
+data$mode_impr_hour = as.factor(data$mode_impr_hour)
+```
+
+# Q1. Was the experiment randomized properly?
+By comparing control and treatment groups
+```{r}
+# Split control and treatment datasets
+data_control <- data[data$test == 0,]
+data_treatment <- data[data$test == 1,]
+
+# Check the number of rows
+nrow(data_control)
+nrow(data_treatment)
+```
+
+```{r}
+# Scale up the treatment group the same size as the control group
+data_treatment_scaled <- sample_n(data_treatment,nrow(data_control))
+
+# Check the number of rows
+nrow(data_control)
+nrow(data_treatment_scaled)
+
+# Combine the datasets again
+data_combined <- rbind(data_control,data_treatment_scaled)
+```
+
+```{r}
+ggplot(data_combined, aes(tot_impr, fill=test)) + 
+   geom_histogram(alpha = 0.5, position = 'identity') + 
+   xlim(0,200) +
+   labs(title = "Impression distribution in control & treatment groups")
+```
+```{r}
+# Remove outliers that fall outside 3SD from median and have no impression
+data_cleaned <- data %>%
+  filter(!(abs(tot_impr - median(tot_impr)) > 3*sd(tot_impr))) %>% 
+  filter(tot_impr>=1)
+
+# Check the number of rows
+nrow(data)
+nrow(data_cleaned)
+
+# Also split clean data into control and treatment datasets
+data_control_cleaned <- data_cleaned[data_cleaned$test == 0,]
+data_treatment_cleaned <- data_cleaned[data_cleaned$test == 1,]
+```
+
+
+# Q1a. Report the share of users allocated to the control group to 6 decimal points
+```{r}
+# Report the share of row data
+control_data =  nrow(data[data$test == 0, ]) / nrow(data)
+format(round(control_data, 6), nsmall = 6)  
+```
+
+```{r}
+# Report the share of row data after removing outliers
+control_data_cleaned =  nrow(data_cleaned[data_cleaned$test == 0, ]) / nrow(data_cleaned)
+format(round(control_data_cleaned, 6), nsmall = 6)  
+```
+
+
+# Q1b. Conduct an analysis to test if the experiment was properly randomized
+
+## Perform 2-sided z-test if there's significant difference between groups
+```{r}
+# Perform 2-sided z-test, with raw data
+n_control = nrow(data_control)
+n_treatment = nrow(data_treatment)
+
+n_control_converted = nrow(data_control[data_control$converted == 1,])
+n_treatment_converted = nrow(data_treatment[data_treatment$converted == 1,])
+
+prop.test(x = c(n_control_converted, n_treatment_converted), n = c(n_control, n_treatment), 
+          p = NULL, alternative = "two.sided", correct = TRUE)
+
+# p-value = 1.999e-13, which is significant
+# we can conclude that the proportion of conversion is significantly different in the two groups
+```
+
+```{r}
+# Perform 2-sided z-test, with cleaned data
+n_control_cleaned = nrow(data_control_cleaned)
+n_treatment_cleaned = nrow(data_treatment_cleaned)
+
+n_control_cleaned_converted = nrow(data_control_cleaned[data_control_cleaned$converted == 1,])
+n_treatment_cleaned_converted = nrow(data_treatment_cleaned[data_treatment_cleaned$converted == 1,])
+
+prop.test(x = c(n_control_cleaned_converted, n_treatment_cleaned_converted), n = c(n_control_cleaned, n_treatment_cleaned), 
+          p = NULL, alternative = "two.sided", correct = TRUE)
+
+# p-value = 5.471e-14, which is significant
+# we can conclude that the proportion of conversion is significantly different in the two groups
+```
+
+## if test is a predictor of other variables
+```{r}
+# if test predicts total number of impression, with raw data
+logit1 = glm(data = data, test~tot_impr, family = 'binomial')
+summary(logit1)
+# p-value = 0.831, which is not significant
+
+# if test predicts total number of impression, with cleaned data
+logit2 = glm(data = data_cleaned, test~tot_impr, family = 'binomial')
+summary(logit2)
+# p-value = 0.0507, ~0.05, which is significant
+```
+
+```{r}
+# if test predicts the day of the week user encounter most impressions, with raw data
+logit3 = glm(data = data, test~mode_impr_day, family = 'binomial')
+summary(logit3)
+# all days of week are significant, except Fridays
+
+# if test predicts the day of the week user encounter most impressions, with cleaned data
+logit4 = glm(data = data_cleaned, test~mode_impr_day, family = 'binomial')
+summary(logit4)
+# all days of week are significant, except Fridays
+```
+
+```{r}
+# if test predicts the hour of the day user encounter most impressions, with raw data
+logit5 = glm(data = data, test~mode_impr_hour, family = 'binomial')
+summary(logit5)
+# only hour22 and hour23 are significant
+
+# if test predicts the hour of the day user encounter most impressions, with raw data
+logit6 = glm(data = data_cleaned, test~mode_impr_hour, family = 'binomial')
+summary(logit6)
+# only hour22 and hour23 are significant
+```
+
+
+# Q2. Was the campaign effective in increasing conversion rates?
+
+```{r}
+# Compute the conversion rate of control users
+control_conversion =  nrow(data[data$test == 0 & data$converted == 1, ]) / nrow(data[data$test == 0, ])
+control_conversion
+#1.78%
+
+# Compute the conversion rate of treatment users
+treatment_conversion = nrow(data[data$test == 1 & data$converted == 1, ]) / nrow(data[data$test == 1, ])
+treatment_conversion
+# 2.55%
+
+# Compute % of consumers converted as a result of the ad campaign
+treatment_conversion - control_conversion
+# 0.75=7%
+
+# Compute the conversion rate uplift
+treatment_conversion / control_conversion
+# 1.43 times
+```
+
+
+```{r}
+# Run a logistic regression to evaluate impacts on conversion rates
+
+logit7=glm(data = data_cleaned, converted~test+mode_impr_day+mode_impr_hour+tot_impr, family = 'binomial')
+summary(logit7)
+
+# test1 estimate=0.4581665, which is positively correlated
+# p-value=6.94e-16, which is significant
+```
+
+# Export the cleaned dataset in csv
+```{r}
+write_csv(data_cleaned, "data_cleaned.csv")
+```
